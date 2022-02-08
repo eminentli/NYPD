@@ -1,0 +1,263 @@
+---
+title: "NYPD Shooting Incident Data Analysis"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### **Input file**
+
+* Title: NYPD Shooting Incident Data (Historic)
+* Url: [https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv](https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv)
+* Dataset description:  List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
+
+
+
+```{r import_data}
+options(repr.plot.width=30, repr.plot.height=8)
+library(tidyverse)
+
+url_in <- 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv'
+NYPD <- read_csv(url_in)
+```
+
+
+## Check the data structure
+```{r check_stucture}
+
+library(dplyr)
+glimpse(NYPD)  
+```
+
+
+## Possible bias
+1. Different boroughs may have different security levels, which means they have different numbers of shooting incidents. Brooklyn probably has a higher crime rate than other boro's.
+2. Different age groups can have different shootings incident rate. 20s may be more inclined to shoot.
+
+
+## Analytics plan
+1. Will check the number of incident by boro and age group to verify the bias above.
+2. Also leverage modeling method to find the relation between number of death and number of incidents.
+
+
+
+
+## Data transform : Change OCCUR_DATE to date format
+```{r change_date}
+
+NYPD$OCCUR_DATE <- as.Date(NYPD$OCCUR_DATE,format='%m/%d/%Y')
+
+```
+
+
+## Count the number of incident by each boro in NY in 2020 to see which area has more cases
+```{r summarize_boro}
+NYPD_by_boro_2020 <- NYPD %>% 
+  mutate(OCCUR_DATE = as.Date(OCCUR_DATE,format='%m/%d/%Y') ) %>% 
+  filter( between(OCCUR_DATE, as.Date("2020-01-01"), as.Date("2020-12-31"))  ) %>% 
+  group_by(BORO) %>%
+  summarize(cases =n()) %>%
+  select(BORO,cases) %>%
+  ungroup()
+
+NYPD_by_boro_2020
+```
+
+## Get the boro with the highest number of shooting incident
+
+```{r top_boro}
+NYPD_by_boro_2020 %>% 
+  slice_max(cases, n=1)
+```
+
+## Get the death rate of shooting incident for each boro in 2020
+```{r summarize_death_boro}
+NYPD_death_rate_by_boro <- NYPD %>%
+    mutate(OCCUR_DATE = as.Date(OCCUR_DATE,format='%m/%d/%Y') ) %>% 
+    filter( between(OCCUR_DATE, as.Date("2020-01-01"), as.Date("2020-12-31"))  ) %>% 
+    group_by(BORO) %>%
+    summarize(cases =n(),deaths = sum(STATISTICAL_MURDER_FLAG)) %>%
+    mutate(deaths_rate = round(deaths / cases,3)) %>%
+    ungroup()
+NYPD_death_rate_by_boro
+```
+
+## Get the boro with the highest death rate in shooting incident
+
+```{r top_death_rate_boro}
+NYPD_death_rate_by_boro %>% 
+  slice_max(deaths_rate, n=1)
+```
+
+
+
+
+## Count the number of incident by Perpetrator’s age group in 2020
+```{r summarize_age}
+NYPD_by_age <- NYPD %>%
+    mutate(OCCUR_DATE = as.Date(OCCUR_DATE,format='%m/%d/%Y') ) %>% 
+    filter( between(OCCUR_DATE, as.Date("2020-01-01"), as.Date("2020-12-31"))  ) %>% 
+    filter(! is.na(PERP_AGE_GROUP)  ) %>%
+    group_by(PERP_AGE_GROUP) %>%
+    summarize(cases =n()) %>%
+    select(PERP_AGE_GROUP,cases) %>%
+    ungroup()
+NYPD_by_age
+```
+
+
+
+
+## Get the age group with the highest number of incident
+```{r top_age}
+NYPD_by_age %>% 
+  slice_max(cases, n=1)
+```
+
+
+## Visualize number of cases by boro 
+```{r chart_boro}
+options(repr.plot.width=30, repr.plot.height=8)
+ggplot(NYPD_by_boro_2020, aes(reorder(BORO, cases, sum), cases)) +  geom_col(fill = "#4472C4") +
+  geom_text(aes(label=cases), position=position_dodge(width=0.9), hjust=0) + 
+  coord_flip() +   
+  labs(title = "Number of Shooting Incidents by Borough in 2020", y= NULL)+
+  theme(text=element_text(size=10)) 
+```
+
+## Visualize death rate per incident by boro 
+```{r chart_date_rate_boro}
+options(repr.plot.width=30, repr.plot.height=8)
+ggplot(NYPD_death_rate_by_boro, aes(reorder(BORO, deaths_rate, sum), deaths_rate)) +  geom_col(fill = "#ED7D31") +
+  geom_text(aes(label=deaths_rate), position=position_dodge(width=0.9), hjust=-0.1) + 
+  coord_flip() +   
+  labs(title = "Death Rate per Shooting Incident by Borough in 2020", y= NULL) + 
+  theme(text=element_text(size=10)) #change font size of legend title
+```
+
+
+## Visualize number of cases by age group
+```{r chart_age}
+options(repr.plot.width=30, repr.plot.height=8)
+ggplot(NYPD_by_age, aes(reorder(PERP_AGE_GROUP, cases, sum), cases)) +  geom_col(fill = "#00BFC4") + coord_flip() +
+    geom_text(aes(label=cases), position=position_dodge(width=0.9), hjust=-0.1) + 
+    labs(title = "Number of Shooting Incidents by Age", y= NULL) +
+    theme(text=element_text(size=10))
+```
+
+
+## Build model to see the relationship between number of deaths and number of shooting incidents
+```{r prep_for_model}
+
+NYPD_by_month <- NYPD %>%
+    mutate(OCCUR_DATE = as.Date(OCCUR_DATE,format='%m/%d/%Y') ) %>%
+    mutate(OCCUR_MONTH = strftime(OCCUR_DATE,format='%Y/%m') ) %>%
+    mutate(Month = strftime(OCCUR_DATE,format='%m') ) %>%
+#     filter( between(OCCUR_DATE, as.Date("2020-01-01"), as.Date("2020-12-31"))  ) %>% 
+    group_by(OCCUR_MONTH,Month) %>%
+    summarize(deaths = sum(STATISTICAL_MURDER_FLAG), cases= n())
+
+```
+
+
+## Build model to see the relationship between number of deaths and number of shooting incidents
+
+```{r model}
+mod <- lm(deaths  ~ cases  , data = NYPD_by_month)
+summary(mod)
+```
+
+
+## Predict number of deaths with model
+
+```{r pred_death}
+pred <- tibble(pred = predict(mod))
+
+NYPD_by_month_w_pred <- cbind(NYPD_by_month,pred)
+```
+
+
+## Plot predicted deaths and actual deaths
+
+```{r plot_death}
+options(repr.plot.width=30, repr.plot.height=8)
+NYPD_by_month_w_pred %>% ggplot() +
+   geom_point(aes(x=cases, y=deaths, size = 1.5), color = "blue") +
+   geom_point(aes(x = cases, y = pred,size = 1.5), color = "red") +
+   geom_line(aes(x = cases, y = pred ),linetype = "dashed", color = "red") +
+   labs(title = "Model deaths with cases", y= NULL) +
+   theme(
+#        legend.position="bottom",
+    text=element_text(size=10)) #change font size of legend title
+```
+
+
+
+## Build model to see the relationship between number of shooting incidents and calendar month
+
+```{r model2}
+mod_m <- lm(cases ~ Month , data = NYPD_by_month)
+summary(mod_m)
+```
+
+## Predict number of cases with model
+
+```{r pred_cases}
+pred_m <- tibble(pred_m = predict(mod_m))
+
+NYPD_by_month_w_pred <- cbind(NYPD_by_month_w_pred,pred_m)
+```
+
+
+## Plot predicted deaths and actual deaths
+
+```{r plot_case_model}
+options(repr.plot.width=30, repr.plot.height=8)
+NYPD_by_month_w_pred %>% ggplot() +
+   geom_point(aes(x=Month, y=cases, size = 0.5), color = "blue") +
+   geom_line(aes(x = Month, y = pred_m ),linetype = "dashed", color = "red") + 
+   geom_point(aes(x = Month, y = pred_m,size = 1.5), color = "red") +
+   labs(title = "Model cases with month", y= NULL) +
+   theme(
+#        legend.position="bottom",
+    text=element_text(size=10)) #change font size of legend title
+
+```
+
+
+
+## Conclusion
+1. Brooklyn has had more shootings than any other borough.
+2. The Staten Island has the highest fatality rate from shootings.
+3. In 2020 in NY, the shootings were mainly committed by people who are 25~44.
+4. 18% chance of dying in a shooting incident.
+5. There were more shootings in July and August than any other month.
+
+
+
+
+
+
+
+
+##	my session info
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```
+
+
+
+
+
+
+
+
+
+
+
+
